@@ -264,4 +264,11 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		repo := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
 		require.ErrorContains(t, repo.createHNSWIndex(768), "full 768-dim coverage")
 	})
+
+	t.Run("wrong_index_kind_with_reserved_name_is_not_reported_ready", func(t *testing.T) {
+		require.NoError(t, db.Exec(`CREATE INDEX embeddings_embedding_idx_896
+			ON embeddings (dimension) WHERE dimension=896`).Error)
+		repo := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+		require.ErrorContains(t, repo.createHNSWIndex(896), "full 896-dim coverage")
+	})
 }

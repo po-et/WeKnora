@@ -42,3 +42,16 @@ jobs:
           LOG_LEVEL: warn
           LOG_FORMAT: ''
         run: go test -mod=readonly -race -count=1 -timeout=8m -v ./internal/application/repository/retriever/postgres
+      - name: Check out the exact deliverable for scoped lint
+        uses: actions/checkout@v6
+        with:
+          ref: 7150187945f8f086a84dc82e4b981f1b6dc4a6e5
+          path: source-candidate
+          persist-credentials: false
+      - name: Fetch the exact lint baseline
+        run: git -C source-candidate fetch --depth=1 https://github.com/Tencent/WeKnora.git 256a3f2966866337f7dc3c5fcc10037f2ae18d52
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: source-candidate
+          args: --new-from-rev=256a3f2966866337f7dc3c5fcc10037f2ae18d52 ./internal/application/repository/retriever/postgres
