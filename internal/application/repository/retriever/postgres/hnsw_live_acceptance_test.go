@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -107,63 +109,73 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		knowledge_id text, knowledge_base_id text, tag_id text, content text NOT NULL,
 		dimension integer NOT NULL, embedding halfvec NOT NULL, is_enabled boolean,
 		UNIQUE (source_id, source_type))`).Error)
-	require.NoError(t, db.Exec(`INSERT INTO embeddings
-		(source_id, chunk_id, knowledge_id, knowledge_base_id, content, dimension, embedding, is_enabled)
-		SELECT 's'||i, 'c'||i, 'doc', 'kb', 'article '||i, 1536,
-		ARRAY(SELECT sin((i+j)*0.07)::real FROM generate_series(1,1536) j)::halfvec(1536), true
-		FROM generate_series(1,4096) i`).Error)
-	// Give the target a clear distance gap. Periodic background vectors must
-	// not turn an approximate nearest-neighbor tie into a false regression.
-	require.NoError(t, db.Exec(`UPDATE embeddings SET embedding =
-		(ARRAY[1::real] || array_fill(0::real, ARRAY[1535]))::halfvec(1536)
-		WHERE source_id='s1'`).Error)
+	t.Setenv("AUTO_MIGRATE", "false")
+	loader := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+	rng := rand.New(rand.NewSource(3298))
+	var vector []float32
+	for offset := 0; offset < 4096; offset += 128 {
+		rows := make([]*types.IndexInfo, 0, 128)
+		embeddings := make(map[string][]float32, 128)
+		for i := offset; i < offset+128; i++ {
+			id := fmt.Sprintf("s%d", i+1)
+			v := make([]float32, 1536)
+			for j := range v {
+				v[j] = rng.Float32()*2 - 1
+			}
+			if i == 0 {
+				vector = append([]float32(nil), v...)
+			}
+			embeddings[id] = v
+			rows = append(rows, &types.IndexInfo{SourceID: id, ChunkID: id, KnowledgeID: "doc", KnowledgeBaseID: "kb", Content: "article " + id, IsEnabled: true})
+		}
+		require.NoError(t, loader.BatchSave(context.Background(), rows, map[string]any{"embedding": embeddings}))
+	}
 	require.NoError(t, db.Exec("ANALYZE embeddings").Error)
-	vector := make([]float32, 1536)
-	vector[0] = 1
 	params := types.RetrieveParams{Embedding: vector, TopK: 1, KnowledgeBaseIDs: []string{"kb"}}
 
-	t.Setenv("AUTO_MIGRATE", "false")
-	before := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
-	result, err := before.VectorRetrieve(context.Background(), params)
-	require.NoError(t, err)
-	require.Len(t, result, 1)
-	require.Len(t, result[0].Results, 1)
-	require.Equal(t, "s1", result[0].Results[0].SourceID)
-	baselinePlan := actualVectorPlan(t, db, recorder.lastSQL())
-	require.True(t, planHas(baselinePlan, "Node Type", "Seq Scan"))
-	require.NoError(t, db.Raw("SELECT to_regclass('embeddings_embedding_idx_1536') IS NOT NULL").Scan(&exists).Error)
-	require.False(t, exists, "AUTO_MIGRATE=false must leave the database unchanged")
+	t.Run("public_query_and_planner", func(t *testing.T) {
+		before := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+		result, err := before.VectorRetrieve(context.Background(), params)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Len(t, result[0].Results, 1)
+		require.Equal(t, "s1", result[0].Results[0].SourceID)
+		baselinePlan := actualVectorPlan(t, db, recorder.lastSQL())
+		require.True(t, planHas(baselinePlan, "Node Type", "Seq Scan"))
+		require.NoError(t, db.Raw("SELECT to_regclass('embeddings_embedding_idx_1536') IS NOT NULL").Scan(&exists).Error)
+		require.False(t, exists, "AUTO_MIGRATE=false must leave the database unchanged")
 
-	t.Setenv("AUTO_MIGRATE", "true")
-	after := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
-	result, err = after.VectorRetrieve(context.Background(), params)
-	require.NoError(t, err, "the request must remain usable while the background build is scheduled")
-	require.Equal(t, "s1", result[0].Results[0].SourceID)
-	require.Eventually(t, func() bool {
-		var valid bool
-		err := db.Raw("SELECT COALESCE((SELECT indisvalid FROM pg_index WHERE indexrelid=to_regclass('embeddings_embedding_idx_1536')),false)").Scan(&valid).Error
-		return err == nil && valid
-	}, 2*time.Minute, 200*time.Millisecond)
-	result, err = after.VectorRetrieve(context.Background(), params)
-	require.NoError(t, err)
-	require.Equal(t, "s1", result[0].Results[0].SourceID)
-	indexedPlan := actualVectorPlan(t, db, recorder.lastSQL())
-	require.True(t, planHas(indexedPlan, "Index Name", "embeddings_embedding_idx_1536"), "normal planner must select HNSW; do not force enable_seqscan off")
+		t.Setenv("AUTO_MIGRATE", "true")
+		after := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+		result, err = after.VectorRetrieve(context.Background(), params)
+		require.NoError(t, err, "the request must remain usable while the background build is scheduled")
+		require.Equal(t, "s1", result[0].Results[0].SourceID)
+		require.Eventually(t, func() bool {
+			var valid bool
+			err := db.Raw("SELECT COALESCE((SELECT indisvalid FROM pg_index WHERE indexrelid=to_regclass('embeddings_embedding_idx_1536')),false)").Scan(&valid).Error
+			return err == nil && valid
+		}, 2*time.Minute, 200*time.Millisecond)
+		result, err = after.VectorRetrieve(context.Background(), params)
+		require.NoError(t, err)
+		require.Equal(t, "s1", result[0].Results[0].SourceID)
+		indexedPlan := actualVectorPlan(t, db, recorder.lastSQL())
+		require.True(t, planHas(indexedPlan, "Index Name", "embeddings_embedding_idx_1536"), "normal planner must select HNSW; do not force enable_seqscan off")
 
-	// Preserve the newer main behavior: re-indexing updates content, and a
-	// repeated source in one batch retains its final value.
-	index := &types.IndexInfo{SourceID: "s1", ChunkID: "c1", KnowledgeID: "doc", KnowledgeBaseID: "kb", Content: "updated article", IsEnabled: true}
-	additional := map[string]any{"embedding": map[string][]float32{"s1": vector}}
-	require.NoError(t, after.Save(context.Background(), index, additional))
-	result, err = after.VectorRetrieve(context.Background(), params)
-	require.NoError(t, err)
-	require.Equal(t, "updated article", result[0].Results[0].Content)
-	first, last := *index, *index
-	first.Content, last.Content = "old batch value", "final batch value"
-	require.NoError(t, after.BatchSave(context.Background(), []*types.IndexInfo{&first, &last}, additional))
-	result, err = after.VectorRetrieve(context.Background(), params)
-	require.NoError(t, err)
-	require.Equal(t, "final batch value", result[0].Results[0].Content)
+		// Preserve the newer main behavior: re-indexing updates content, and a
+		// repeated source in one batch retains its final value.
+		index := &types.IndexInfo{SourceID: "s1", ChunkID: "c1", KnowledgeID: "doc", KnowledgeBaseID: "kb", Content: "updated article", IsEnabled: true}
+		additional := map[string]any{"embedding": map[string][]float32{"s1": vector}}
+		require.NoError(t, after.Save(context.Background(), index, additional))
+		result, err = after.VectorRetrieve(context.Background(), params)
+		require.NoError(t, err)
+		require.Equal(t, "updated article", result[0].Results[0].Content)
+		first, last := *index, *index
+		first.Content, last.Content = "old batch value", "final batch value"
+		require.NoError(t, after.BatchSave(context.Background(), []*types.IndexInfo{&first, &last}, additional))
+		result, err = after.VectorRetrieve(context.Background(), params)
+		require.NoError(t, err)
+		require.Equal(t, "final batch value", result[0].Results[0].Content)
+	})
 
 	// A hand-built subset index is valid but cannot cover all rows of the
 	// dimension. This is an independent catalog/planner boundary, not a mock.
@@ -171,7 +183,8 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		require.NoError(t, db.Exec(`CREATE INDEX hand_built_subset_512 ON embeddings USING hnsw
 			((embedding::halfvec(512)) halfvec_cosine_ops)
 			WHERE dimension=512 AND knowledge_base_id='only-one-kb'`).Error)
-		require.NoError(t, after.createHNSWIndex(512))
+		repo := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+		require.NoError(t, repo.createHNSWIndex(512))
 		var valid bool
 		require.NoError(t, db.Raw("SELECT COALESCE((SELECT indisvalid FROM pg_index WHERE indexrelid=to_regclass('embeddings_embedding_idx_512')),false)").Scan(&valid).Error)
 		require.True(t, valid, "a narrower operator index cannot replace full-dimension coverage")
