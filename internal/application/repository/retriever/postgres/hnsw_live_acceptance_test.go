@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"os"
 	"strings"
 	"sync"
@@ -113,11 +112,14 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		SELECT 's'||i, 'c'||i, 'doc', 'kb', 'article '||i, 1536,
 		ARRAY(SELECT sin((i+j)*0.07)::real FROM generate_series(1,1536) j)::halfvec(1536), true
 		FROM generate_series(1,4096) i`).Error)
+	// Give the target a clear distance gap. Periodic background vectors must
+	// not turn an approximate nearest-neighbor tie into a false regression.
+	require.NoError(t, db.Exec(`UPDATE embeddings SET embedding =
+		(ARRAY[1::real] || array_fill(0::real, ARRAY[1535]))::halfvec(1536)
+		WHERE source_id='s1'`).Error)
 	require.NoError(t, db.Exec("ANALYZE embeddings").Error)
 	vector := make([]float32, 1536)
-	for j := range vector {
-		vector[j] = float32(math.Sin(float64(j+2) * 0.07))
-	}
+	vector[0] = 1
 	params := types.RetrieveParams{Embedding: vector, TopK: 1, KnowledgeBaseIDs: []string{"kb"}}
 
 	t.Setenv("AUTO_MIGRATE", "false")
