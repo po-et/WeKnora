@@ -246,4 +246,22 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		require.NoError(t, db.Raw("SELECT COALESCE((SELECT indisvalid FROM pg_index WHERE indexrelid=to_regclass('embeddings_embedding_idx_512')),false)").Scan(&valid).Error)
 		require.True(t, valid, "a narrower operator index cannot replace full-dimension coverage")
 	})
+
+	t.Run("full_manual_index_is_reused", func(t *testing.T) {
+		require.NoError(t, db.Exec(`CREATE INDEX operator_full_2560 ON embeddings USING hnsw
+			((embedding::halfvec(2560)) halfvec_cosine_ops) WHERE dimension=2560`).Error)
+		repo := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+		require.NoError(t, repo.createHNSWIndex(2560))
+		var created bool
+		require.NoError(t, db.Raw("SELECT to_regclass('embeddings_embedding_idx_2560') IS NOT NULL").Scan(&created).Error)
+		require.False(t, created, "reuse a valid full-cover operator index regardless of its name")
+	})
+
+	t.Run("narrow_index_with_reserved_name_is_not_reported_ready", func(t *testing.T) {
+		require.NoError(t, db.Exec(`CREATE INDEX embeddings_embedding_idx_768 ON embeddings USING hnsw
+			((embedding::halfvec(768)) halfvec_cosine_ops)
+			WHERE dimension=768 AND knowledge_base_id='only-one-kb'`).Error)
+		repo := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+		require.ErrorContains(t, repo.createHNSWIndex(768), "full 768-dim coverage")
+	})
 }
