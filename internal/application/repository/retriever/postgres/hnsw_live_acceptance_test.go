@@ -184,6 +184,52 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		require.NotEmpty(t, result[0].Results)
 	})
 
+	t.Run("pinned_session_cleanup_and_healthy_query_after_failure", func(t *testing.T) {
+		// A startup setting is the configured default that RESET must restore.
+		timedDB, err := gorm.Open(gormpostgres.New(gormpostgres.Config{
+			DSN: dsn + "&options=-c%20statement_timeout%3D3000", PreferSimpleProtocol: true,
+		}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+		require.NoError(t, err)
+		pool, err := timedDB.DB()
+		require.NoError(t, err)
+		pool.SetMaxOpenConns(1)
+		pool.SetMaxIdleConns(1)
+		t.Cleanup(func() { _ = pool.Close() })
+		var initialPID, afterPID int
+		var configured, restored string
+		require.NoError(t, timedDB.Raw("SELECT pg_backend_pid()").Scan(&initialPID).Error)
+		require.NoError(t, timedDB.Raw("SHOW statement_timeout").Scan(&configured).Error)
+		require.Equal(t, "3s", configured)
+		repo := NewPostgresRetrieveEngineRepository(timedDB).(*pgRepository)
+		require.NoError(t, repo.createHNSWIndex(2048))
+		require.NoError(t, timedDB.Raw("SHOW statement_timeout").Scan(&restored).Error)
+		require.Equal(t, configured, restored)
+
+		// A real DDL failure must not poison the pooled connection, leak the
+		// advisory lock or break the next healthy retrieval.
+		require.NoError(t, timedDB.Exec("SET default_transaction_read_only=on").Error)
+		err = repo.createHNSWIndex(2304)
+		require.ErrorContains(t, err, "read-only")
+		require.NoError(t, timedDB.Exec("SET default_transaction_read_only=off").Error)
+		require.NoError(t, timedDB.Raw("SHOW statement_timeout").Scan(&restored).Error)
+		require.Equal(t, configured, restored)
+		require.NoError(t, timedDB.Raw("SELECT pg_backend_pid()").Scan(&afterPID).Error)
+		require.Equal(t, initialPID, afterPID, "verify recovery on the same physical connection")
+		lease, err := sqlDB.Conn(context.Background())
+		require.NoError(t, err)
+		defer lease.Close()
+		for _, dim := range []int{2048, 2304} {
+			var locked, unlocked bool
+			require.NoError(t, lease.QueryRowContext(context.Background(), "SELECT pg_try_advisory_lock($1,$2)", hnswAdvisoryLockKey, dim).Scan(&locked))
+			require.True(t, locked, "the builder must release its session lock")
+			require.NoError(t, lease.QueryRowContext(context.Background(), "SELECT pg_advisory_unlock($1,$2)", hnswAdvisoryLockKey, dim).Scan(&unlocked))
+			require.True(t, unlocked)
+		}
+		result, err := repo.VectorRetrieve(context.Background(), params)
+		require.NoError(t, err)
+		require.NotEmpty(t, result[0].Results)
+	})
+
 	// A hand-built subset index is valid but cannot cover all rows of the
 	// dimension. This is an independent catalog/planner boundary, not a mock.
 	t.Run("narrow_hand_built_index_is_not_full_coverage", func(t *testing.T) {
