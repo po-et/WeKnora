@@ -202,6 +202,9 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		require.Equal(t, "3s", configured)
 		repo := NewPostgresRetrieveEngineRepository(timedDB).(*pgRepository)
 		require.NoError(t, repo.createHNSWIndex(2048))
+		var built bool
+		require.NoError(t, timedDB.Raw("SELECT COALESCE((SELECT indisvalid FROM pg_index WHERE indexrelid=to_regclass('embeddings_embedding_idx_2048')),false)").Scan(&built).Error)
+		require.True(t, built, "exercise actual successful DDL before checking cleanup")
 		require.NoError(t, timedDB.Raw("SHOW statement_timeout").Scan(&restored).Error)
 		require.Equal(t, configured, restored)
 
@@ -210,6 +213,7 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		require.NoError(t, timedDB.Exec("SET default_transaction_read_only=on").Error)
 		err = repo.createHNSWIndex(2304)
 		require.ErrorContains(t, err, "read-only")
+		require.ErrorContains(t, err, "could not build embeddings_embedding_idx_2304")
 		require.NoError(t, timedDB.Exec("SET default_transaction_read_only=off").Error)
 		require.NoError(t, timedDB.Raw("SHOW statement_timeout").Scan(&restored).Error)
 		require.Equal(t, configured, restored)
