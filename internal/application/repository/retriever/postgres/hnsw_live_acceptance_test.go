@@ -271,4 +271,12 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 		repo := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
 		require.ErrorContains(t, repo.createHNSWIndex(896), "full 896-dim coverage")
 	})
+
+	t.Run("index_on_another_table_is_not_reported_ready", func(t *testing.T) {
+		require.NoError(t, db.Exec("CREATE TABLE other_embeddings (LIKE embeddings)").Error)
+		require.NoError(t, db.Exec(`CREATE INDEX embeddings_embedding_idx_960 ON other_embeddings USING hnsw
+			((embedding::halfvec(960)) halfvec_cosine_ops) WHERE dimension=960`).Error)
+		repo := NewPostgresRetrieveEngineRepository(db).(*pgRepository)
+		require.ErrorContains(t, repo.createHNSWIndex(960), "full 960-dim coverage")
+	})
 }

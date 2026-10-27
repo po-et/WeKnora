@@ -45,7 +45,7 @@ jobs:
       - name: Check out the exact deliverable for scoped lint
         uses: actions/checkout@v6
         with:
-          ref: 7150187945f8f086a84dc82e4b981f1b6dc4a6e5
+          ref: 5a4f2df65e2e29672b085bddf9cae59f044fef54
           path: source-candidate
           persist-credentials: false
       - name: Fetch the exact lint baseline
