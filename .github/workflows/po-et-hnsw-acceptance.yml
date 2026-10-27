@@ -1,0 +1,40 @@
+name: po-et HNSW acceptance
+
+on:
+  push:
+    branches: [verify/hnsw-3364-live-20261027]
+
+permissions:
+  contents: read
+
+jobs:
+  live-postgres:
+    if: github.repository == 'po-et/WeKnora'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: paradedb/paradedb:v0.25.11-pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: acceptance-only
+          POSTGRES_DB: hnsw_acceptance
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U postgres -d hnsw_acceptance'
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Targeted unit and live database acceptance
+        env:
+          WEKNORA_HNSW_ACCEPTANCE_DSN: postgres://postgres:acceptance-only@127.0.0.1:5432/hnsw_acceptance?sslmode=disable
+          WEKNORA_HNSW_ALLOW_SCHEMA_SETUP: '1'
+          LOG_LEVEL: warn
+          LOG_FORMAT: ''
+        run: go test -mod=readonly -race -count=1 -timeout=8m -v ./internal/application/repository/retriever/postgres
