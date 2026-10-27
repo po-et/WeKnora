@@ -155,6 +155,9 @@ func TestHNSWLiveAcceptance(t *testing.T) {
 	index := &types.IndexInfo{SourceID: "s1", ChunkID: "c1", KnowledgeID: "doc", KnowledgeBaseID: "kb", Content: "updated article", IsEnabled: true}
 	additional := map[string]any{"embedding": map[string][]float32{"s1": vector}}
 	require.NoError(t, after.Save(context.Background(), index, additional))
+	result, err = after.VectorRetrieve(context.Background(), params)
+	require.NoError(t, err)
+	require.Equal(t, "updated article", result[0].Results[0].Content)
 	first, last := *index, *index
 	first.Content, last.Content = "old batch value", "final batch value"
 	require.NoError(t, after.BatchSave(context.Background(), []*types.IndexInfo{&first, &last}, additional))

@@ -25,7 +25,7 @@ jobs:
           POSTGRES_DB: hnsw_acceptance
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U postgres -d hnsw_acceptance'
+          --health-cmd "pg_isready -U postgres -d hnsw_acceptance"
           --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@v6
