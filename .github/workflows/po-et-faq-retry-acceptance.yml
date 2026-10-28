@@ -1,0 +1,62 @@
+name: po-et FAQ retry acceptance
+
+on:
+  push:
+    branches: [verify/faq-tenant-retry-20261028]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    if: github.repository == 'po-et/WeKnora'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GOGC: '50'
+      GOMEMLIMIT: 3GiB
+      GOFLAGS: -p=2
+      LOG_LEVEL: warn
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 3
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Reproduce acknowledgement on the unchanged upstream handler
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=internal/application/service/knowledge_faq_import.go
+          trap 'git show 9b087297d1002887f994c60f03fe76cf67dba5ea:"$file" > "$file"' EXIT
+          git show dacb9c2643bdfe7b3f95e0d96e1584513b27f3a2:"$file" > "$file"
+          set +e
+          go test -mod=readonly -race -count=1 -timeout=5m -v -run '^TestFAQImportRetriesTenantLookupFailure$' ./internal/application/service > baseline.log 2>&1
+          result=$?
+          set -e
+          cat baseline.log
+          test "$result" -eq 1
+          grep -F 'tenant lookup failure was acknowledged as success' baseline.log
+      - name: Verify recovery and existing FAQ behavior
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          go test -mod=readonly -race -count=1 -timeout=8m -v -run '^(TestFAQ|TestTag)' ./internal/application/service 2>&1 | tee fixed.log
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          args: --timeout=10m --new-from-rev=dacb9c2643bdfe7b3f95e0d96e1584513b27f3a2 ./internal/application/service
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: faq-retry-evidence
+          path: |
+            baseline.log
+            fixed.log
