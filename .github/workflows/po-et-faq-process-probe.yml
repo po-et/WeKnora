@@ -1,0 +1,51 @@
+name: po-et FAQ process recovery probe
+
+on:
+  push:
+    branches: [verify/faq-process-recovery-20261028]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    if: github.repository == 'po-et/WeKnora'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      GOGC: '50'
+      GOMEMLIMIT: 3GiB
+      GOFLAGS: -p=2
+      LOG_LEVEL: warn
+      WK_FAQ_PROBE_REDIS: 127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Observe real process exits and terminal task state
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          go test -mod=readonly -count=1 -timeout=12m -v -run '^TestFAQProcessRecoveryProbe$' ./internal/application/service 2>&1 | tee process-probe.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: faq-process-recovery-evidence
+          path: process-probe.log
