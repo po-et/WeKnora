@@ -24,18 +24,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: d3d70d1782829335138ffa50552c7a8ae2192bd8
           persist-credentials: false
           fetch-depth: 3
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
       - name: Reproduce acknowledgement on the unchanged upstream handler
         shell: bash
         run: |
           set -euo pipefail
           file=internal/application/service/knowledge_faq_import.go
-          trap 'git show 9b087297d1002887f994c60f03fe76cf67dba5ea:"$file" > "$file"' EXIT
+          trap 'git show d3d70d1782829335138ffa50552c7a8ae2192bd8:"$file" > "$file"' EXIT
           git show dacb9c2643bdfe7b3f95e0d96e1584513b27f3a2:"$file" > "$file"
           set +e
           go test -mod=readonly -race -count=1 -timeout=5m -v -run '^TestFAQImportRetriesTenantLookupFailure$' ./internal/application/service > baseline.log 2>&1
