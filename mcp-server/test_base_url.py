@@ -59,7 +59,14 @@ class BaseURLTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 document = Path(directory, "note.txt")
                 document.write_text("knowledge", encoding="utf-8")
-                with mock.patch.dict(os.environ, {"MCP_ALLOWED_UPLOAD_DIRS": directory}):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "MCP_ALLOWED_UPLOAD_DIRS": directory,
+                        "NO_PROXY": "127.0.0.1",
+                        "no_proxy": "127.0.0.1",
+                    },
+                ):
                     for prefix in ("/api/v1", "/weknora/api/v1"):
                         for suffix in ("", "/"):
                             base_url = f"http://127.0.0.1:{server.server_port}{prefix}{suffix}"
