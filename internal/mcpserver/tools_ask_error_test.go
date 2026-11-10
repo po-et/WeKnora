@@ -108,8 +108,7 @@ func TestAskReportsFailuresAfterPartialAnswer(t *testing.T) {
 				}
 				router := gin.New()
 				router.POST("/mcp/:endpoint_id", func(c *gin.Context) {
-					ctx := context.WithValue(c.Request.Context(), types.MCPEndpointContextKey, ep)
-					ctx = context.WithValue(ctx, types.TenantIDContextKey, uint64(1))
+					ctx := mcpCallContext(1, ep)
 					c.Request = c.Request.WithContext(ctx)
 					c.Next()
 				}, gin.WrapH(srv.Handler()))
